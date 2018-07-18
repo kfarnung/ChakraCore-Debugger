@@ -20,6 +20,8 @@
 #include <string>
 #include <vector>
 
+// HACK - trick it into not loading the Windows APIs
+#define _CHAKRACOMMONWINDOWS_H_
 #include <ChakraCore.h>
 #include <ChakraDebugProtocolHandler.h>
 #include <ChakraDebugService.h>

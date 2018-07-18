@@ -3,6 +3,54 @@
 
 #include "stdafx.h"
 
+std::string GetMultiByteString(const wchar_t* str)
+{
+    size_t length = wcslen(str);
+    if (length == 0)
+    {
+        return std::string();
+    }
+
+    DWORD result = WideCharToMultiByte(CP_UTF8, 0, str, static_cast<int>(length), nullptr, 0, nullptr, nullptr);
+    if (result == 0)
+    {
+        return std::string();
+    }
+
+    std::vector<char> data(result);
+    result = WideCharToMultiByte(CP_UTF8, 0, str, static_cast<int>(length), data.data(), static_cast<int>(data.size()), nullptr, nullptr);
+    if (result == 0)
+    {
+        return std::string();
+    }
+
+    return std::string(begin(data), end(data));
+}
+
+std::wstring GetWideString(const char* str)
+{
+    size_t length = strlen(str);
+    if (length == 0)
+    {
+        return std::wstring();
+    }
+
+    DWORD result = MultiByteToWideChar(CP_UTF8, 0, str, static_cast<int>(length), nullptr, 0);
+    if (result == 0)
+    {
+        return std::wstring();
+    }
+
+    std::vector<wchar_t> data(result);
+    result = MultiByteToWideChar(CP_UTF8, 0, str, static_cast<int>(length), data.data(), static_cast<int>(data.size()));
+    if (result == 0)
+    {
+        return std::wstring();
+    }
+
+    return std::wstring(begin(data), end(data));
+}
+
 //
 // Class to store information about command-line arguments to the host.
 //
@@ -13,8 +61,9 @@ public:
     bool enableDebugging;
     int port;
     bool help;
+    bool serialize;
 
-    std::vector<std::wstring> scriptArgs;
+    std::vector<std::string> scriptArgs;
 
     CommandLineArguments()
         : breakOnNextLine(false)
@@ -30,21 +79,21 @@ public:
 
         for (int index = 1; index < argc; ++index)
         {
-            std::wstring arg(argv[index]);
+            std::string arg(GetMultiByteString(argv[index]));
 
             // Any flags before the script are considered host flags, anything else is passed to the script.
             if (!foundScript && (arg.length() > 0) && (arg[0] == L'-'))
             {
-                if (!arg.compare(L"--inspect"))
+                if (!arg.compare("--inspect"))
                 {
                     this->enableDebugging = true;
                 }
-                else if (!arg.compare(L"--inspect-brk"))
+                else if (!arg.compare("--inspect-brk"))
                 {
                     this->enableDebugging = true;
                     this->breakOnNextLine = true;
                 }
-                else if (!arg.compare(L"--port") || !arg.compare(L"-p"))
+                else if (!arg.compare("--port") || !arg.compare("-p"))
                 {
                     ++index;
                     if (argc > index)
@@ -76,16 +125,16 @@ public:
 
     void ShowHelp()
     {
-        fwprintf(stderr,
-            L"\n"
-            L"Usage: ChakraCore.Debugger.Sample.exe [host-options] <script> [script-arguments]\n"
-            L"\n"
-            L"Options: \n"
-            L"      --inspect          Enable debugging\n"
-            L"      --inspect-brk      Enable debugging and break\n"
-            L"  -p, --port <number>    Specify the port number\n"
-            L"  -?  --help             Show this help info\n"
-            L"\n");
+        fprintf(stderr,
+            "\n"
+            "Usage: ChakraCore.Debugger.Sample.exe [host-options] <script> [script-arguments]\n"
+            "\n"
+            "Options: \n"
+            "      --inspect          Enable debugging\n"
+            "      --inspect-brk      Enable debugging and break\n"
+            "  -p, --port <number>    Specify the port number\n"
+            "  -?  --help             Show this help info\n"
+            "\n");
     }
 };
 
@@ -97,49 +146,46 @@ unsigned currentSourceContext = 0;
 //
 // Helper to load a script from disk.
 //
-std::wstring LoadScript(const wchar_t* filename)
+std::string LoadScript(const char* filename)
 {
     std::ifstream ifs(filename, std::ifstream::in | std::ifstream::binary);
 
     if (!ifs.good())
     {
-        fwprintf(stderr, L"chakrahost: unable to open file: %s.\n", filename);
-        return std::wstring();
+        fprintf(stderr, "chakrahost: unable to open file: %s.\n", filename);
+        return std::string();
     }
 
-    std::vector<char> rawBytes(
-        (std::istreambuf_iterator<char>(ifs)),
-        std::istreambuf_iterator<char>());
-
-    std::vector<wchar_t> contents(rawBytes.size());
-
-    if (MultiByteToWideChar(CP_UTF8, 0, rawBytes.data(), static_cast<int>(rawBytes.size()), contents.data(), static_cast<int>(contents.size())) == 0)
-    {
-        fwprintf(stderr, L"chakrahost: fatal error.\n");
-        return std::wstring();
-    }
-
-    return std::wstring(begin(contents), end(contents));
+    return std::string((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
 }
 
-JsErrorCode RunScript(const wchar_t* filename, JsValueRef* result)
+JsErrorCode RunScript(const char* filename, JsValueRef* result)
 {
     wchar_t fullPath[MAX_PATH];
-    DWORD pathLength = GetFullPathName(filename, MAX_PATH, fullPath, nullptr);
+    std::wstring wFilename = GetWideString(filename);
+    DWORD pathLength = GetFullPathName(wFilename.c_str(), MAX_PATH, fullPath, nullptr);
     if (pathLength > MAX_PATH || pathLength == 0)
     {
         return JsErrorInvalidArgument;
     }
 
+    std::string filePath = GetMultiByteString(fullPath);
+
     // Load the script from the disk.
-    std::wstring script = LoadScript(fullPath);
+    std::string script = LoadScript(filePath.c_str());
     if (script.empty())
     {
         return JsErrorInvalidArgument;
     }
 
+    JsValueRef scriptValue = nullptr;
+    IfFailRet(JsCreateString(script.c_str(), script.length(), &scriptValue));
+
+    JsValueRef sourceUrl = nullptr;
+    IfFailRet(JsCreateString(filePath.c_str(), filePath.length(), &sourceUrl));
+
     // Run the script.
-    IfFailRet(JsRunScript(script.c_str(), currentSourceContext++, fullPath, result));
+    IfFailRet(JsRun(scriptValue, currentSourceContext++, sourceUrl, JsParseScriptAttributeNone, result));
 
     return JsNoError;
 }
@@ -158,20 +204,22 @@ JsValueRef CALLBACK HostEcho(
     {
         if (index > 1)
         {
-            wprintf(L" ");
+            printf(" ");
         }
 
         JsValueRef stringValue = JS_INVALID_REFERENCE;
-        IfFailThrowJsError(JsConvertValueToString(arguments[index], &stringValue), L"invalid argument");
+        IfFailThrowJsError(JsConvertValueToString(arguments[index], &stringValue), "invalid argument");
 
-        const wchar_t* string;
-        size_t length;
-        IfFailThrowJsError(JsStringToPointer(stringValue, &string, &length), L"invalid argument");
+        size_t length = 0;
+        IfFailThrowJsError(JsCopyString(stringValue, nullptr, 0, &length), "invalid argument");
+        std::vector<char> stringData(length);
+        IfFailThrowJsError(JsCopyString(stringValue, stringData.data(), static_cast<int>(stringData.size()), nullptr), "invalid argument");
+        std::string message(begin(stringData), end(stringData));
 
-        wprintf(L"%s", string);
+        wprintf(GetWideString(message.c_str()).c_str());
     }
 
-    wprintf(L"\n");
+    printf("\n");
 
     return JS_INVALID_REFERENCE;
 }
@@ -223,16 +271,17 @@ JsValueRef CALLBACK HostRunScript(
 
     if (argumentCount < 2)
     {
-        ThrowJsError(L"not enough arguments");
+        ThrowJsError("not enough arguments");
         return result;
     }
 
     // Convert filename.
-    const wchar_t* filename = nullptr;
     size_t length = 0;
+    IfFailThrowJsError(JsCopyString(arguments[1], nullptr, 0, &length), "invalid filename argument");
 
-    IfFailThrowJsError(JsStringToPointer(arguments[1], &filename, &length), L"invalid filename argument");
-    IfFailThrowJsError(RunScript(filename, &result), L"failed to run script");
+    std::vector<char> data(length);
+    IfFailThrowJsError(JsCopyString(arguments[1], data.data(), data.size(), &length), "invalid filename argument");
+    IfFailThrowJsError(RunScript(data.data(), &result), "failed to run script");
 
     return result;
 }
@@ -241,14 +290,14 @@ JsValueRef CALLBACK HostRunScript(
 // Helper to define a host callback method on the global host object.
 //
 JsErrorCode DefineHostCallback(
-    JsValueRef globalObject, 
-    const wchar_t* callbackName, 
-    JsNativeFunction callback, 
+    JsValueRef globalObject,
+    const char* callbackName,
+    JsNativeFunction callback,
     void* callbackState)
 {
     // Get property ID.
     JsPropertyIdRef propertyId = JS_INVALID_REFERENCE;
-    IfFailRet(JsGetPropertyIdFromName(callbackName, &propertyId));
+    IfFailRet(JsCreatePropertyId(callbackName, strlen(callbackName), &propertyId));
 
     // Create a function
     JsValueRef function = JS_INVALID_REFERENCE;
@@ -263,7 +312,7 @@ JsErrorCode DefineHostCallback(
 //
 // Creates a host execution context and sets up the host object in it.
 //
-JsErrorCode CreateHostContext(JsRuntimeHandle runtime, std::vector<std::wstring>& scriptArgs, JsContextRef* context)
+JsErrorCode CreateHostContext(JsRuntimeHandle runtime, std::vector<std::string>& scriptArgs, JsContextRef* context)
 {
     // Create the context.
     IfFailRet(JsCreateContext(runtime, context));
@@ -281,15 +330,16 @@ JsErrorCode CreateHostContext(JsRuntimeHandle runtime, std::vector<std::wstring>
 
     // Get the name of the property ("host") that we're going to set on the global object.
     JsPropertyIdRef hostPropertyId = JS_INVALID_REFERENCE;
-    IfFailRet(JsGetPropertyIdFromName(L"host", &hostPropertyId));
+    static const char* hostIdName = "host";
+    IfFailRet(JsCreatePropertyId(hostIdName, strlen(hostIdName), &hostPropertyId));
 
     // Set the property.
     IfFailRet(JsSetProperty(globalObject, hostPropertyId, hostObject, true));
 
     // Now create the host callbacks that we're going to expose to the script.
-    IfFailRet(DefineHostCallback(hostObject, L"echo", HostEcho, nullptr));
-    IfFailRet(DefineHostCallback(hostObject, L"runScript", HostRunScript, nullptr));
-    IfFailRet(DefineHostCallback(hostObject, L"throw", HostThrow, nullptr));
+    IfFailRet(DefineHostCallback(hostObject, "echo", HostEcho, nullptr));
+    IfFailRet(DefineHostCallback(hostObject, "runScript", HostRunScript, nullptr));
+    IfFailRet(DefineHostCallback(hostObject, "throw", HostThrow, nullptr));
 
     // Create an array for arguments.
     JsValueRef arguments = JS_INVALID_REFERENCE;
@@ -299,10 +349,10 @@ JsErrorCode CreateHostContext(JsRuntimeHandle runtime, std::vector<std::wstring>
     for (unsigned int index = 0; index < argCount; index++)
     {
         // Create the argument value.
-        std::wstring& str = scriptArgs[index];
+        std::string& str = scriptArgs[index];
 
         JsValueRef argument = JS_INVALID_REFERENCE;
-        IfFailRet(JsPointerToString(str.c_str(), str.length(), &argument));
+        IfFailRet(JsCreateString(str.c_str(), str.length(), &argument));
 
         // Create the index.
         JsValueRef indexValue = JS_INVALID_REFERENCE;
@@ -314,7 +364,8 @@ JsErrorCode CreateHostContext(JsRuntimeHandle runtime, std::vector<std::wstring>
 
     // Get the name of the property that we're going to set on the host object.
     JsPropertyIdRef argumentsPropertyId = JS_INVALID_REFERENCE;
-    IfFailRet(JsGetPropertyIdFromName(L"arguments", &argumentsPropertyId));
+    static const char* argumentsPropertyIdName = "arguments";
+    IfFailRet(JsCreatePropertyId(argumentsPropertyIdName, strlen(argumentsPropertyIdName), &argumentsPropertyId));
 
     // Set the arguments property.
     IfFailRet(JsSetProperty(hostObject, argumentsPropertyId, arguments, true));
@@ -335,17 +386,20 @@ JsErrorCode PrintScriptException()
     IfFailRet(JsGetAndClearException(&exception));
 
     // Get message.
-    JsPropertyIdRef messageName = JS_INVALID_REFERENCE;
-    IfFailRet(JsGetPropertyIdFromName(L"message", &messageName));
+    JsPropertyIdRef messagePropertyId = JS_INVALID_REFERENCE;
+    static const char* messagePropertyIdName = "message";
+    IfFailRet(JsCreatePropertyId(messagePropertyIdName, strlen(messagePropertyIdName), &messagePropertyId));
 
     JsValueRef messageValue = JS_INVALID_REFERENCE;
-    IfFailRet(JsGetProperty(exception, messageName, &messageValue));
+    IfFailRet(JsGetProperty(exception, messagePropertyId, &messageValue));
 
-    const wchar_t* message;
-    size_t length;
-    IfFailRet(JsStringToPointer(messageValue, &message, &length));
+    size_t length = 0;
+    IfFailRet(JsCopyString(messageValue, nullptr, 0, &length));
+    std::vector<char> messageData(length);
+    IfFailRet(JsCopyString(messageValue, messageData.data(), static_cast<int>(messageData.size()), nullptr));
+    std::string message(begin(messageData), end(messageData));
 
-    fwprintf(stderr, L"chakrahost: exception: %s\n", message);
+    fwprintf(stderr, L"chakrahost: exception: %s\n", GetWideString(message.c_str()).c_str());
 
     return JsNoError;
 }
@@ -407,26 +461,26 @@ int _cdecl wmain(int argc, wchar_t* argv[])
         // Create the runtime. We're only going to use one runtime for this host.
         IfFailError(
             JsCreateRuntime(JsRuntimeAttributeDispatchSetExceptionsToDebugger, nullptr, &runtime),
-            L"failed to create runtime.");
+            "failed to create runtime.");
 
         if (arguments.enableDebugging)
         {
             IfFailError(
                 EnableDebugging(runtime, runtimeName, arguments.breakOnNextLine, static_cast<uint16_t>(arguments.port), debugProtocolHandler, debugService),
-                L"failed to enable debugging.");
+                "failed to enable debugging.");
         }
 
         // Similarly, create a single execution context. Note that we're putting it on the stack here,
         // so it will stay alive through the entire run.
-        IfFailError(CreateHostContext(runtime, arguments.scriptArgs, &context), L"failed to create execution context.");
+        IfFailError(CreateHostContext(runtime, arguments.scriptArgs, &context), "failed to create execution context.");
 
         // Now set the execution context as being the current one on this thread.
-        IfFailError(JsSetCurrentContext(context), L"failed to set current context.");
+        IfFailError(JsSetCurrentContext(context), "failed to set current context.");
 
         if (debugProtocolHandler && arguments.breakOnNextLine)
         {
             std::cout << "Waiting for debugger to connect..." << std::endl;
-            IfFailError(debugProtocolHandler->WaitForDebugger(), L"failed to wait for debugger");
+            IfFailError(debugProtocolHandler->WaitForDebugger(), "failed to wait for debugger");
             std::cout << "Debugger connected" << std::endl;
         }
 
@@ -436,44 +490,44 @@ int _cdecl wmain(int argc, wchar_t* argv[])
 
         if (errorCode == JsErrorScriptException)
         {
-            IfFailError(PrintScriptException(), L"failed to print exception");
+            IfFailError(PrintScriptException(), "failed to print exception");
             return EXIT_FAILURE;
         }
         else
         {
-            IfFailError(errorCode, L"failed to run script.");
+            IfFailError(errorCode, "failed to run script.");
         }
 
         // Convert the return value.
         JsValueRef numberResult = JS_INVALID_REFERENCE;
         double doubleResult;
-        IfFailError(JsConvertValueToNumber(result, &numberResult), L"failed to convert return value.");
-        IfFailError(JsNumberToDouble(numberResult, &doubleResult), L"failed to convert return value.");
+        IfFailError(JsConvertValueToNumber(result, &numberResult), "failed to convert return value.");
+        IfFailError(JsNumberToDouble(numberResult, &doubleResult), "failed to convert return value.");
         returnValue = (int)doubleResult;
         std::cout << returnValue << std::endl;
 
         // Clean up the current execution context.
-        IfFailError(JsSetCurrentContext(JS_INVALID_REFERENCE), L"failed to cleanup current context.");
+        IfFailError(JsSetCurrentContext(JS_INVALID_REFERENCE), "failed to cleanup current context.");
         context = JS_INVALID_REFERENCE;
 
         if (debugService)
         {
-            IfFailError(debugService->Close(), L"failed to close service");
-            IfFailError(debugService->UnregisterHandler(runtimeName), L"failed to unregister handler");
-            IfFailError(debugService->Destroy(), L"failed to destroy service");
+            IfFailError(debugService->Close(), "failed to close service");
+            IfFailError(debugService->UnregisterHandler(runtimeName), "failed to unregister handler");
+            IfFailError(debugService->Destroy(), "failed to destroy service");
         }
 
         if (debugProtocolHandler)
         {
-            IfFailError(debugProtocolHandler->Destroy(), L"failed to destroy handler");
+            IfFailError(debugProtocolHandler->Destroy(), "failed to destroy handler");
         }
 
         // Clean up the runtime.
-        IfFailError(JsDisposeRuntime(runtime), L"failed to cleanup runtime.");
+        IfFailError(JsDisposeRuntime(runtime), "failed to cleanup runtime.");
     }
     catch (...)
     {
-        fwprintf(stderr, L"chakrahost: fatal error: internal error.\n");
+        fprintf(stderr, "chakrahost: fatal error: internal error.\n");
     }
 
 error:

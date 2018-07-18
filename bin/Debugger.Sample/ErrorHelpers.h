@@ -9,7 +9,7 @@
         JsErrorCode error = (v); \
         if (error != JsNoError) \
         { \
-            fwprintf(stderr, L"chakrahost: fatal error: %s.\n", (e)); \
+            fprintf(stderr, "chakrahost: fatal error: %s.\n", (e)); \
             goto error; \
         } \
     }
@@ -55,12 +55,12 @@
 // This "throws" an exception in the Chakra space. Useful routine for callbacks
 // that need to throw a JS error to indicate failure.
 //
-inline void ThrowJsError(std::wstring errorString)
+inline void ThrowJsError(std::string errorString)
 {
     // We ignore error since we're already in an error state.
     JsValueRef errorValue = JS_INVALID_REFERENCE;
     JsValueRef errorObject = JS_INVALID_REFERENCE;
-    JsPointerToString(errorString.c_str(), errorString.length(), &errorValue);
+    JsCreateString(errorString.c_str(), errorString.length(), &errorValue);
     JsCreateError(errorValue, &errorObject);
     JsSetException(errorObject);
 }
